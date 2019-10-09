@@ -1,0 +1,222 @@
+pragma solidity ^0.4.10;
+
+contract Telmedcontract {
+
+address public patient;
+address public telmedcenter; 
+string public patientID;
+string patientName;
+
+string IPFShashEHR;
+string doctorName;
+string doctor_ID;
+
+address public med_insurer;
+address public pharmacy;
+address public medresearch_org;
+
+enum contractState { NotReady,Created,PhysicianSelected, ConsultationCompleted, WaitingToApproveToPublish,Approved,ApprFailed,
+PaymentRequested, AccessProvided,PaymentApproved,WaitingForInsurerApproval, 
+NotCoveredandFailed,RequestSubmittedForRecordAccess,AgreedToProvideAccessToROrg,DeniedToProvideAccessToROrg}
+
+contractState public contState; 
+
+enum telmedcenterState {ReadyToSubmit, SubmittedForApproval, ApprovalSuccess, FailedValidation}
+telmedcenterState public telmedState;
+
+enum insurerState{SubmittedForPaymentApproval,ApprovalRequested, ClaimSuccess, FailedClaim}
+insurerState public insrState;
+
+//enum medresearchorgState{ WaitForApproval,RecordApprovalRequested, SuccessfulApprovalToAccess, FailedApprovalToAccess }
+//medresearchorgState public medrstate;
+
+ 
+mapping (address=> bool) public patientList;//addresses of publishers and results (true or false)
+mapping (address => bool) public approvedPatients ; 
+
+mapping(address=>string) public medrecHashes; //hash provided by telmedcenter
+mapping(address=>telmedcenterState) public telmedc;
+
+mapping(address=>insurerState) public insrpay;
+mapping(address=>bool) public insrList; //approved list from the insurer's side
+
+//mapping(address=> medresearchorgState) public medorg;
+  
+ uint  numberOfRequestsByTelmedcenter; 
+ uint numberOfApprovalsByMedInsurer;
+ uint numberOfApprovalsByPatient;
+
+//constructor
+
+function Telmedcontract(){ //one contract per patient & patient creates contract
+    patientID = "A1245OS";
+    patient= msg.sender;
+    patientName= "Claura Dawson"; //example name
+    IPFShashEHR= "QmXgm5QVTy8pRtKrTPmoWPGXNesehCpP4jjFMTpvGamc1p";
+    contState = contractState.NotReady;
+    numberOfRequestsByTelmedcenter = 0;
+    numberOfApprovalsByMedInsurer = 0;
+    medresearch_org= 0xdD870fA1b7C4700F2BD7f44238821C26f7392148;
+}
+    //modifiers
+     modifier  OnlyPatient(){
+        require(msg.sender == patient); 
+        _;
+    }
+    modifier NotPatient(){
+        require(msg.sender!=patient);
+        _;
+    }
+	 modifier  OnlyMedinsurer(){
+        require(msg.sender == med_insurer); 
+        _;
+    }
+    modifier NotMedinsurer(){
+        require(msg.sender!=med_insurer);
+        _;
+    }
+    	 modifier  OnlyTelmedcenter(){
+        require(msg.sender == telmedcenter); 
+        _;
+    }
+    	 modifier  OnlyPharmacy(){
+        require(msg.sender == pharmacy); 
+        _;
+    }
+    modifier OnlyMedresearch_org(){
+        require(msg.sender==medresearch_org);
+        _;
+    }
+    //events
+    event ContractCreated(address owner, string info);
+    event DoctorSelected(address owner, string info);    
+    event RequestedForApproval(address telmedcenter , string info);    
+    event PermissionGrantedToPublish(address patient , string info);
+    event ApprovedSuccess(address telmedcenter, string info);     
+    event FailedApproval(address author, string info);
+    event ReviseContent(address telmedcenter, string info);    
+    event MedDispersed(address pharmacy, string info);
+    event RequestPaymentApproval (address med_insurer, string info);    
+    event SuccessfulVerification(address med_insurer, string msg);
+    event PaymentApprovalSuccess(address med_insurer, string info);
+    event RedirectPayment (address med_insurer, string info);
+    event ApprovalFailure(address med_insurer, string info);
+    event ProvideAccessToRecords (address medresearch_org, string info);
+    event ContractAborted(address medresearch_org);
+        
+    //functions
+    function createTelMedContract()OnlyPatient{
+       require(contState == contractState.NotReady);
+       contState = contractState.Created;
+       ContractCreated(msg.sender, "Please Select physician");
+       }
+       
+    function selectPhysician()OnlyPatient{
+           require(contState==contractState.Created);
+           contState=contractState.PhysicianSelected;
+           DoctorSelected(msg.sender, "Selection Completed, and Treatment commenced");
+        }
+        
+   // <----treatment completed and telmed center now needs to publish the patient EHR on IPFS--->
+ 
+        
+    function requestToPublish(address telmedcenterAddress, string docHash) NotPatient   {
+        
+             require(contState==contractState.PhysicianSelected && telmedc[telmedcenterAddress]==telmedcenterState.ReadyToSubmit);
+             telmedc[telmedcenterAddress]= telmedcenterState.SubmittedForApproval;
+             contState = contractState.WaitingToApproveToPublish;
+             medrecHashes[telmedcenterAddress]=docHash;
+             RequestedForApproval(msg.sender , "Treatment completed and request patient approval for publishing the medrecords on IPFS.");
+    } 
+    
+   function provideApproval( address telmedcenterAddress) OnlyPatient public{
+        require(contState==contractState.WaitingToApproveToPublish && (telmedc[telmedcenterAddress] ==telmedcenterState.SubmittedForApproval));
+        
+         if(keccak256(medrecHashes[telmedcenterAddress]) == keccak256(IPFShashEHR)) // hash comparison takes place
+         {
+             PermissionGrantedToPublish(msg.sender, "Records viewed and verified by patient.");
+             telmedc[telmedcenterAddress] = telmedcenterState.ApprovalSuccess;
+             patientList[telmedcenterAddress] = true;
+             approvedPatients[telmedcenterAddress]=true;
+             numberOfApprovalsByPatient+=1;
+             contState=contractState.Approved;
+             ApprovedSuccess(telmedcenterAddress," Verification Success! Proceed to publish treatment details on IPFS.");
+             
+         }
+		  else if(keccak256(medrecHashes[telmedcenterAddress]) != keccak256(IPFShashEHR))
+  {
+      FailedApproval (msg.sender, " Content Modified/Corrupted: Hash does not match . Patient rejected the request.");
+      patientList[telmedcenterAddress] = false;
+      telmedc[telmedcenterAddress] = telmedcenterState.FailedValidation;
+      contState=contractState.ApprFailed;
+      ReviseContent(telmedcenterAddress, "Update correct details and request for approval again.");
+  }
+    }
+  function disperseMed() NotPatient {
+    require(contState==contractState.Approved) ;
+    contState=contractState.PaymentRequested;
+    MedDispersed(msg.sender, "Medicine dispersed.Proceed to payment settlement.");
+}
+          
+           
+function requestEHR(address medinsurerAddress, string docHash) NotPatient {
+     
+require(contState==contractState.PaymentRequested && insrpay[medinsurerAddress]==insurerState.SubmittedForPaymentApproval);
+        
+  
+    insrpay[medinsurerAddress]=insurerState.ApprovalRequested;
+    contState=contractState.WaitingForInsurerApproval;
+    medrecHashes[medinsurerAddress]=docHash;
+
+           RequestPaymentApproval(msg.sender, "Request Med-Insurance claim for treatment.");
+                 
+             }
+             
+             function giveAccess( address medinsurerAddress) OnlyPatient public{
+        
+        
+           require(contState==contractState.WaitingForInsurerApproval && (insrpay[medinsurerAddress]==insurerState.ApprovalRequested));
+        
+         if(keccak256(medrecHashes[medinsurerAddress]) == keccak256(IPFShashEHR)) // hash comparison takes place
+         {
+             SuccessfulVerification(msg.sender, "Success! Pay for Treatment .");
+             insrpay[medinsurerAddress]=insurerState.ClaimSuccess;
+             
+             insrList[medinsurerAddress] = true;
+             approvedPatients[medinsurerAddress]=true;
+             numberOfApprovalsByPatient+=1;
+             contState=contractState.Approved;
+             ApprovedSuccess(msg.sender,"  Release the complete insurance claim for treatment done.");
+             
+         }
+          else  if(keccak256(medrecHashes[medinsurerAddress]) != keccak256(IPFShashEHR))
+           {
+            ApprovalFailure(msg.sender, "Treatment not covered in the Insurance policy!!");
+             insrpay[medinsurerAddress]=insurerState.FailedClaim;
+                 insrList[medinsurerAddress]=false;
+                 contState=contractState.NotCoveredandFailed;
+                 RedirectPayment(msg.sender, "Patient needs to complete the outstanding payment.");
+        }     
+		  
+    }
+    
+      function gainAccessToPatientRecords(bool access) NotPatient payable {
+               require(contState==contractState.Approved);
+          
+          
+         if (access==true){
+               contState=contractState.AgreedToProvideAccessToROrg;
+               ProvideAccessToRecords(msg.sender, " Grant time limited access to patient records..");
+          }
+        else if (access == false){//no agreement on contract conditions
+             contState=contractState.DeniedToProvideAccessToROrg;
+            ContractAborted(msg.sender);
+            
+        }
+    }
+         
+}
+          
+             
+
+
